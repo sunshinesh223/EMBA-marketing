@@ -7,6 +7,7 @@ import torch
 from sklearn.cluster import KMeans
 import matplotlib.pyplot as plt
 import seaborn as sns
+import numpy as np
 
 # Example reviews
 reviews = [
@@ -42,11 +43,14 @@ tokenizer = BertTokenizer.from_pretrained(model_name)
 model = BertModel.from_pretrained(model_name).to('cuda')
 
 def get_bert_embeddings(texts):
-    inputs = tokenizer(texts, return_tensors='pt', truncation=True, padding=True, max_length=128).to('cuda')
-    with torch.no_grad():
-        outputs = model(**inputs)
-    embeddings = outputs.last_hidden_state.mean(dim=1).cpu().numpy()
-    return embeddings
+    all_embeddings = []
+    for text in texts:
+        inputs = tokenizer(text, return_tensors='pt', truncation=True, padding=True, max_length=128).to('cuda')
+        with torch.no_grad():
+            outputs = model(**inputs)
+        embeddings = outputs.last_hidden_state.mean(dim=1).cpu().numpy()
+        all_embeddings.append(embeddings)
+    return np.vstack(all_embeddings)
 
 # Get embeddings for key phrases
 embeddings = get_bert_embeddings(features)
@@ -72,3 +76,10 @@ plt.title('Frequency of Key Aspects in Customer Reviews')
 plt.xlabel('Aspect Cluster')
 plt.ylabel('Frequency')
 plt.show()
+# Print out phrases in each cluster
+for cluster_id in cluster_summary['cluster']:
+    print(f"Cluster {cluster_id}:")
+    phrases = cluster_summary[cluster_summary['cluster'] == cluster_id]['phrase'].values[0]
+    for phrase in phrases:
+        print(f"  - {phrase}")
+    print("\n")
