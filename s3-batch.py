@@ -118,7 +118,7 @@ def analyze_sentiment_if_relevant_batch(reviews, attribute):
 
 
 def process_attribute(attribute, reviews_df):
-    batch_size = 100
+    batch_size = 10
     sentiment_scores = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         futures = [
