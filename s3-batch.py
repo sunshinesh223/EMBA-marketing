@@ -3,9 +3,10 @@ import requests
 import json
 import matplotlib.pyplot as plt
 import itertools
-from transformers import pipeline, AutoTokenizer
 from tqdm import tqdm
-import concurrent.futures
+import re
+from transformers import pipeline, AutoTokenizer
+
 
 # Define the URL for the local LLaMA server
 url = "http://localhost:11434/api/chat"
@@ -14,13 +15,31 @@ url = "http://localhost:11434/api/chat"
 # Function to call the LLaMA model via Ollama's API for a batch of reviews
 def llama_batch(prompts):
     data = {
-        "model": "llama3",
+        "model": "llama3.1",
         "messages": [{"role": "user", "content": prompt} for prompt in prompts],
         "stream": False,
     }
     headers = {"Content-Type": "application/json"}
-    response = requests.post(url, headers=headers, json=data)
-    return [message["content"] for message in response.json()["message"]["contents"]]
+    try:
+        response = requests.post(url, headers=headers, json=data)
+        response.raise_for_status()  # Raise an exception for HTTP errors
+        response_json = response.json()
+
+        # Extract the content from the response and parse the scores
+        if "message" in response_json and "content" in response_json["message"]:
+            content = response_json["message"]["content"]
+
+            # Use regex to extract relevance scores from the content
+            scores = re.findall(r"Relevance score:\s*([\d.]+)", content)
+            return [float(score) for score in scores]
+
+        else:
+            print("Unexpected response structure:", response_json)
+            return [0.0] * len(prompts)  # Return a list of default scores if structure is unexpected
+
+    except requests.exceptions.RequestException as e:
+        print(f"Request failed: {e}")
+        return [0.0] * len(prompts)  # Return a list of default scores in case of a failure
 
 
 # Load your real data
@@ -61,6 +80,7 @@ def determine_relevance_batch(reviews, attribute):
         Please return a relevance score from 0 to 1, where:
 
         0 means the review is not relevant to the attribute.
+        anything in between reflects the confidence level you have with the relevance.
         1 means the review is highly relevant to the attribute.
 
         Only output a float with the relevance score, nothing else.
@@ -72,10 +92,18 @@ def determine_relevance_batch(reviews, attribute):
     relevance_scores = []
     for response in llama_responses:
         try:
-            relevance_score = float(response.strip())
+            # Check if the response is already a float
+            if isinstance(response, float):
+                relevance_score = response
+            else:
+                relevance_score = float(response.strip())  # Handle if it's a string that needs conversion
         except ValueError:
             relevance_score = 0.0  # Default to 0 if parsing fails
         relevance_scores.append(relevance_score)
+
+    # Ensure the length matches the input
+    if len(relevance_scores) != len(reviews):
+        print(f"Warning: Mismatch in length. Expected {len(reviews)}, got {len(relevance_scores)}.")
 
     return relevance_scores
 
@@ -117,22 +145,29 @@ def analyze_sentiment_if_relevant_batch(reviews, attribute):
     return sentiment_scores
 
 
-def process_attribute(attribute, reviews_df):
-    batch_size = 10
+def process_attribute(attribute, reviews_df, batch_size=5):
     sentiment_scores = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [
-            executor.submit(analyze_sentiment_if_relevant_batch, reviews_df['Review'][i:i + batch_size], attribute)
-            for i in range(0, len(reviews_df), batch_size)
-        ]
-        for future in concurrent.futures.as_completed(futures):
-            sentiment_scores.extend(future.result())
+    total_batches = len(reviews_df) // batch_size + 1
+    with tqdm(total=total_batches, desc=f"Processing {attribute.capitalize()}") as pbar:
+        for i in range(0, len(reviews_df), batch_size):
+            reviews_batch = reviews_df['Review'][i:i + batch_size]
+            sentiment_scores.extend(analyze_sentiment_if_relevant_batch(reviews_batch, attribute))
+            pbar.update(1)
+
+    # Ensure the length matches the input
+    if len(sentiment_scores) != len(reviews_df):
+        print(f"Warning: Mismatch in length. Expected {len(reviews_df)}, got {len(sentiment_scores)}.")
+
     return sentiment_scores
 
 
-# Apply relevance filtering and sentiment analysis
-for attribute in tqdm(attributes, desc="Processing Attributes"):
-    reviews_df[attribute + '_sentiment'] = process_attribute(attribute, reviews_df)
+def process_all_attributes():
+    for attribute in attributes:
+        reviews_df[attribute + '_sentiment'] = process_attribute(attribute, reviews_df)
+
+
+# Run the processing
+process_all_attributes()
 
 # Extract numerical rating from 'rating_raw' and normalize it
 reviews_df['Review_Score'] = reviews_df['rating_raw'].str.extract('(\d)').astype(float)
